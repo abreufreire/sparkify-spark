@@ -1,93 +1,229 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
 import configparser
 from datetime import datetime
 import os
+import sys
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import udf, col
-from pyspark.sql.functions import year, month, dayofmonth, hour, weekofyear, date_format
-
-
-config = configparser.ConfigParser()
-config.read('dl.cfg')
-
-os.environ['AWS_ACCESS_KEY_ID']=config['AWS_ACCESS_KEY_ID']
-os.environ['AWS_SECRET_ACCESS_KEY']=config['AWS_SECRET_ACCESS_KEY']
-
+from pyspark.sql import functions as F
+from pyspark.sql.types import StructType, StructField, DoubleType, StringType, IntegerType, DateType, TimestampType
+from pyspark.sql.utils import AnalysisException
 
 def create_spark_session():
+    """
+    creates new session (or uses existing one)
+    :return: spark session
+    """
+
     spark = SparkSession \
         .builder \
-        .config("spark.jars.packages", "org.apache.hadoop:hadoop-aws:2.7.0") \
+        .appName('sparkify-etl') \
+        .config("spark.jars.packages", "org.apache.hadoop:hadoop-aws:3.2.0") \
         .getOrCreate()
     return spark
 
 
+def create_spark_context(spark):
+    """
+        creates spark context in current spark session.
+    :param spark: spark session obj
+    :return: spark context obj
+
+    notes (tuning):
+    https://spark.apache.org/docs/3.1.2/cloud-integration.html#content
+    https://knowledge.udacity.com/questions/467644
+    """
+    sc = spark.sparkContext
+    sc._jsc.hadoopConfiguration().set("mapreduce.fileoutputcommitter.algorithm.version", "2")
+
+    return sc
+
+
 def process_song_data(spark, input_data, output_data):
+    """
+    processes song data from S3 bucket input data (json format) path/directory & writes output to dimension tables
+    (artists & songs) in S3 bucket output data (parquet format) path.
+    :param spark: spark session
+    :param input_data: raw data from S3 bucket
+    :param output_data: ready data to S3 bucket
+    :return: none
+    """
+
     # get filepath to song data file
-    song_data = 
-    
+    song_data = os.path.join(input_data, "song_data", "*", "*", "*", "*.json")
+    # test a subset of data:
+    # song_data = os.path.join(input_data, "song_data", "A", "B", "*", "*.json")
+
+
+    # song schema explicitly
+    song_schema = StructType([
+        StructField("num_songs", IntegerType()),
+        StructField("artist_id", StringType()),
+        StructField("artist_latitude", DoubleType()),
+        StructField("artist_longitude", DoubleType()),
+        StructField("artist_location", StringType()),
+        StructField("artist_name", StringType()),
+        StructField("song_id", StringType()),
+        StructField("title", StringType()),
+        StructField("duration", DoubleType()),
+        StructField("year", IntegerType())
+    ])
+
     # read song data file
-    df = 
+    df = spark.read.json(song_data, schema=song_schema)
 
     # extract columns to create songs table
-    songs_table = 
-    
-    # write songs table to parquet files partitioned by year and artist
-    songs_table
+    songs_fields = ["title", "artist_id", "year", "duration"]
+    songs_table = df.select(songs_fields).dropDuplicates().withColumn("song_id", F.monotonically_increasing_id())
+
+    # write songs table to parquet files partitioned by year & artist
+    print("\nwriting songs to parquet..")
+    try:
+        songs_table.write.mode("overwrite").partitionBy("year", "artist_id").parquet(os.path.join(output_data, "songs"))
+        print("\nsongs done.")
+    except AnalysisException as e:
+        print("\nunable to write songs to parquet: {}".format(e))
 
     # extract columns to create artists table
-    artists_table = 
-    
+    artists_fields = ["artist_id", "artist_name as name", "artist_location as location",
+                      "artist_latitude as latitude", "artist_longitude as longitude"]
+
+    artists_table = df.selectExpr(artists_fields).dropDuplicates()
+
     # write artists table to parquet files
-    artists_table
+    print("\nwriting artists to parquet..")
+    try:
+        artists_table.write.mode("overwrite").parquet(os.path.join(output_data, "artists"))
+        print("\nartists done.")
+    except AnalysisException as e:
+        print("\nunable to write artists to parquet: {}".format(e))
 
 
 def process_log_data(spark, input_data, output_data):
+    """
+    processes log data from S3 bucket input data (json format) path/directory & writes output to dimension tables
+    (artists & songs) in S3 bucket output data (parquet format) path.
+    :param spark: spark session
+    :param input_data: raw data from S3 bucket
+    :param output_data: ready data to S3 bucket
+    :return: none
+    """
+
     # get filepath to log data file
-    log_data =
+    # s3 udacity:
+    # log_data = os.path.join(input_data, "log_data", "*", "*", "*.json")
+    #local mode:
+    log_data = os.path.join(input_data, "log_data", "*.json")
 
     # read log data file
-    df = 
-    
-    # filter by actions for song plays
-    df = 
+    df = spark.read.json(log_data)
 
-    # extract columns for users table    
-    artists_table = 
-    
+    # filter by actions for song plays
+    df = df.filter(df.page == "NextSong")
+
+    # extract columns for users table
+    users_fields = ["userId as user_id", "firstName as first_name", "lastName as last_name", "gender", "level"]
+    users_table = df.selectExpr(users_fields).dropDuplicates()  # subset=["user_id"]
+
     # write users table to parquet files
-    artists_table
+    print("\nwriting users to parquet..")
+    try:
+        users_table.write.mode("overwrite").parquet(os.path.join(output_data, "users"))
+        print("\nusers done.")
+    except AnalysisException as e:
+        print("\nunable to write users to parquet: {}".format(e))
 
     # create timestamp column from original timestamp column
-    get_timestamp = udf()
-    df = 
-    
+    get_timestamp = F.udf(lambda x: (x / 1000), TimestampType())
+    df = df.withColumn("timestamp", get_timestamp(df.ts))
+
     # create datetime column from original timestamp column
-    get_datetime = udf()
-    df = 
-    
-    # extract columns to create time table
-    time_table = 
-    
-    # write time table to parquet files partitioned by year and month
-    time_table
+    get_datetime = F.udf(lambda x: datetime.fromtimestamp(x), TimestampType())
+    df = df.withColumn("start_time", get_datetime(df.timestamp))
+
+    # get unique timestamp & extract columns to create time table
+    time_table = df.select("start_time").dropDuplicates()
+
+    time_table = time_table.select(
+        F.hour("start_time").alias("hour"),
+        F.dayofmonth("start_time").alias("day"),
+        F.weekofyear("start_time").alias("week"),
+        F.month("start_time").alias("month"),
+        F.year("start_time").alias("year"),
+        F.dayofweek("start_time").alias("weekday")
+    )
+
+    # write time table to parquet files partitioned by year & month
+    print("\nwriting time to parquet..")
+    try:
+        time_table.write.mode("overwrite").partitionBy("year", "month").parquet(os.path.join(output_data, "time"))
+        print("\ntime done.")
+    except AnalysisException as e:
+        print("\nunable to write time to parquet: {}".format(e))
+
+    # print("\ntime df schema:")
+    # time_table.printSchema()
 
     # read in song data to use for songplays table
-    song_df = 
+    songs_df = spark.read.parquet(os.path.join(output_data, "songs", "*", "*", "*"))
 
-    # extract columns from joined song and log datasets to create songplays table 
-    songplays_table = 
+    songs_logs_df = df.join(songs_df, (df.song == songs_df.title))
 
-    # write songplays table to parquet files partitioned by year and month
-    songplays_table
+    # extract columns from joined song and log datasets to create songplays table
+    artists_df = spark.read.parquet(os.path.join(output_data, "artists"))
+
+    songs_logs_artists_df = songs_logs_df.join(artists_df, (songs_logs_df.artist == artists_df.name))
+
+    songplays = songs_logs_artists_df.join(time_table, songs_logs_artists_df.ts == time_table.ts, "left")\
+        .drop(songs_logs_artists_df.year)
+
+    songplays_table = songplays.select(
+        F.monotonically_increasing_id().alias("songplay_id"),  # sorting (unique but not consecutive)
+        F.col("start_time"),
+        F.year("start_time").alias("year"),
+        F.month("start_time").alias("month"),
+        F.col("userId").alias("user_id"),
+        F.col("level"),
+        F.col("song_id"),
+        F.col("artist_id"),
+        F.col("sessionId").alias("session_id"),
+        F.col("location"),
+        F.col("userAgent").alias("user_agent")
+    )
+
+    # write songplays table to parquet files partitioned by year & month
+    print("\nwriting songplays to parquet..")
+    try:
+        songplays_table.write.mode("overwrite").partitionBy("year", "month").parquet(output_data, 'songplays')
+        print("\nsongplays done.")
+    except AnalysisException as e:
+        print("\nunable to write time to parquet: {}".format(e))
 
 
 def main():
+    # local mode: parameters from config file dl.cfg
+    config = configparser.ConfigParser()
+    config.read_file(open("dl.cfg"))
+
+    os.environ["aws_key"] = config["default"]["aws_access_key_id"]
+    os.environ["aws_secret"] = config["default"]["aws_secret_access_key"]
+
+    os.environ["JAVA_HOME"] = "/Library/Java/JavaVirtualMachines/adoptopenjdk-8.jdk/Contents/Home"
+    os.environ["SPARK_HOME"] = "/usr/local/Cellar/apache-spark/3.1.2/libexec"
+
+    # local mode:
+    input_data = "data"
+    output_data = "out-bucket"
+
     spark = create_spark_session()
-    input_data = "s3a://udacity-dend/"
-    output_data = ""
-    
-    process_song_data(spark, input_data, output_data)    
+    sc = create_spark_context(spark)
+
+    process_song_data(spark, input_data, output_data)
+
     process_log_data(spark, input_data, output_data)
+
+    spark.stop()
 
 
 if __name__ == "__main__":
