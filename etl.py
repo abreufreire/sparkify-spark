@@ -18,7 +18,7 @@ def create_spark_session():
 
     spark = SparkSession \
         .builder \
-        .appName('sparkify-etl') \
+        .appName("sparkify-etl") \
         .config("spark.jars.packages", "org.apache.hadoop:hadoop-aws:3.2.0") \
         .getOrCreate()
     return spark
@@ -26,12 +26,13 @@ def create_spark_session():
 
 def create_spark_context(spark):
     """
-        creates spark context in current spark session.
+    creates spark context in current spark session.
     :param spark: spark session obj
     :return: spark context obj
 
     notes (tuning):
     https://spark.apache.org/docs/3.1.2/cloud-integration.html#content
+    https://kb.databricks.com/data/append-slow-with-spark-2.0.0.html
     https://knowledge.udacity.com/questions/467644
     """
     sc = spark.sparkContext
@@ -54,7 +55,6 @@ def process_song_data(spark, input_data, output_data):
     song_data = os.path.join(input_data, "song_data", "*", "*", "*", "*.json")
     # test a subset of data:
     # song_data = os.path.join(input_data, "song_data", "A", "B", "*", "*.json")
-
 
     # song schema explicitly
     song_schema = StructType([
@@ -99,6 +99,10 @@ def process_song_data(spark, input_data, output_data):
     except AnalysisException as e:
         print("\nunable to write artists to parquet: {}".format(e))
 
+    # print dataframe schema:
+    # songs_table.printSchema()
+    # artists_table.printSchema()
+
 
 def process_log_data(spark, input_data, output_data):
     """
@@ -111,10 +115,10 @@ def process_log_data(spark, input_data, output_data):
     """
 
     # get filepath to log data file
-    # s3 udacity:
-    # log_data = os.path.join(input_data, "log_data", "*", "*", "*.json")
-    #local mode:
-    log_data = os.path.join(input_data, "log_data", "*.json")
+    # s3 bucket:
+    log_data = os.path.join(input_data, "log_data", "*", "*", "*.json")
+    # local mode (data sample):
+    # log_data = os.path.join(input_data, "log_data", "*.json")
 
     # read log data file
     df = spark.read.json(log_data)
@@ -135,17 +139,18 @@ def process_log_data(spark, input_data, output_data):
         print("\nunable to write users to parquet: {}".format(e))
 
     # create timestamp column from original timestamp column
-    get_timestamp = F.udf(lambda x: (x / 1000), TimestampType())
-    df = df.withColumn("timestamp", get_timestamp(df.ts))
+    get_timestamp = F.udf(lambda x: datetime.fromtimestamp(x / 1000), TimestampType())
+    df = df.withColumn("start_time", get_timestamp(df.ts))
 
-    # create datetime column from original timestamp column
-    get_datetime = F.udf(lambda x: datetime.fromtimestamp(x), TimestampType())
-    df = df.withColumn("start_time", get_datetime(df.timestamp))
+    # # create datetime column from original timestamp column
+    # get_datetime = F.udf(lambda x: datetime.fromtimestamp(x), TimestampType())
+    # df = df.withColumn("start_time", get_datetime(df.timestamp))
 
     # get unique timestamp & extract columns to create time table
     time_table = df.select("start_time").dropDuplicates()
 
     time_table = time_table.select(
+        F.col("start_time"),
         F.hour("start_time").alias("hour"),
         F.dayofmonth("start_time").alias("day"),
         F.weekofyear("start_time").alias("week"),
@@ -162,60 +167,73 @@ def process_log_data(spark, input_data, output_data):
     except AnalysisException as e:
         print("\nunable to write time to parquet: {}".format(e))
 
-    # print("\ntime df schema:")
-    # time_table.printSchema()
-
     # read in song data to use for songplays table
-    songs_df = spark.read.parquet(os.path.join(output_data, "songs", "*", "*", "*"))
+    songs_df = spark.read.parquet(os.path.join(output_data, "songs"))  # "*", "*", "*"
 
-    songs_logs_df = df.join(songs_df, (df.song == songs_df.title))
-
-    # extract columns from joined song and log datasets to create songplays table
     artists_df = spark.read.parquet(os.path.join(output_data, "artists"))
 
-    songs_logs_artists_df = songs_logs_df.join(artists_df, (songs_logs_df.artist == artists_df.name))
+    songs_artists_df = songs_df.join(artists_df, songs_df.artist_id == artists_df.artist_id).drop(songs_df.artist_id)
 
-    songplays = songs_logs_artists_df.join(time_table, songs_logs_artists_df.ts == time_table.ts, "left")\
-        .drop(songs_logs_artists_df.year)
+    # filter by relevant fields to songplays
+    songs_artists_df = songs_artists_df.select("song_id", "title", "artist_id", F.col("name").alias("artist_name"))
 
-    songplays_table = songplays.select(
-        F.monotonically_increasing_id().alias("songplay_id"),  # sorting (unique but not consecutive)
-        F.col("start_time"),
-        F.year("start_time").alias("year"),
-        F.month("start_time").alias("month"),
-        F.col("userId").alias("user_id"),
-        F.col("level"),
-        F.col("song_id"),
-        F.col("artist_id"),
-        F.col("sessionId").alias("session_id"),
-        F.col("location"),
-        F.col("userAgent").alias("user_agent")
-    )
+    songs_artists_logs = df.join(songs_artists_df,
+                                 (df.artist == songs_artists_df.artist_name) & (df.song == songs_artists_df.title))
+
+    songplays_table = songs_artists_logs.select(F.monotonically_increasing_id().alias("songplay_id"),
+                                                get_timestamp("ts").alias("start_time"),
+                                                F.year("start_time").alias("year"),
+                                                F.month("start_time").alias("month"),
+                                                F.col("userId").alias('user_id'),
+                                                F.col("level"),
+                                                F.col("song_id"),
+                                                F.col("artist_id"),
+                                                F.col('sessionId').alias('session_id'),
+                                                F.col("location"),
+                                                F.col('userAgent').alias('user_agent')
+                                                )
 
     # write songplays table to parquet files partitioned by year & month
     print("\nwriting songplays to parquet..")
     try:
-        songplays_table.write.mode("overwrite").partitionBy("year", "month").parquet(output_data, 'songplays')
+        songplays_table.write.mode("overwrite").partitionBy("year", "month")\
+            .parquet(os.path.join(output_data, "songplays"))
         print("\nsongplays done.")
     except AnalysisException as e:
-        print("\nunable to write time to parquet: {}".format(e))
+        print("\nunable to write songlays to parquet: {}".format(e))
+
+    # print dataframe schema:
+    # users_table.printSchema()
+    # time_table.printSchema()
+    # songplays_table.printSchema()
 
 
-def main():
-    # local mode: parameters from config file dl.cfg
-    config = configparser.ConfigParser()
-    config.read_file(open("dl.cfg"))
+def etl():
 
-    os.environ["aws_key"] = config["default"]["aws_access_key_id"]
-    os.environ["aws_secret"] = config["default"]["aws_secret_access_key"]
+    if len(sys.argv) != 3:
 
-    os.environ["JAVA_HOME"] = "/Library/Java/JavaVirtualMachines/adoptopenjdk-8.jdk/Contents/Home"
-    os.environ["SPARK_HOME"] = "/usr/local/Cellar/apache-spark/3.1.2/libexec"
+        # local mode: parameters from config file dl.cfg
+        config = configparser.ConfigParser()
+        config.read_file(open("dl.cfg"))
 
-    # local mode:
-    input_data = "data"
-    output_data = "out-bucket"
+        os.environ["aws_key"] = config.get("default", "aws_access_key_id")
+        os.environ["aws_secret"] = config.get("default", "aws_secret_access_key")
 
+        os.environ["JAVA_HOME"] = "/Library/Java/JavaVirtualMachines/adoptopenjdk-8.jdk/Contents/Home"
+        os.environ["SPARK_HOME"] = "/usr/local/Cellar/apache-spark/3.1.2/libexec"
+
+        # test with data sample
+        # input_data = "data"
+        # output_data = "parquet"
+
+        input_data = config.get("S3", "input_data")
+        output_data = config.get("S3", "output_data")
+
+    else:
+        input_data = sys.argv[1]
+        output_data = sys.argv[2]
+
+    # funcs:
     spark = create_spark_session()
     sc = create_spark_context(spark)
 
@@ -223,8 +241,8 @@ def main():
 
     process_log_data(spark, input_data, output_data)
 
-    spark.stop()
+    # spark.stop()
 
 
 if __name__ == "__main__":
-    main()
+    etl()
