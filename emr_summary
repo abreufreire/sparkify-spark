@@ -1,0 +1,42 @@
+##### CLuster parameters taken from Amazon EMR #####
+
+
+Summary
+ID:j-1ULPAGBP6I2
+After last step completes: Cluster auto-terminates
+Termination protection: Off
+Tags: --
+Master public DNS: ec2-xx-xx-xxx-xx.us-west-2.compute.amazonaws.com
+Connect to the Master Node Using SSH
+
+
+Configuration details
+Release label: emr-5.33.0
+Hadoop distribution: Amazon
+Applications: Spark 2.4.7
+Log URI: s3://aws-logs-758818281029-us-west-2/
+EMRFS consistent view: Disabled
+Custom AMI ID: --
+
+
+Application user interfaces
+Persistent user interfaces: Spark history server, YARN timeline server
+On-cluster user interfaces: --
+
+
+Network and hardware
+Availability zone: us-west-2d
+Subnet ID: subnet-a78b978c
+Master: 1m5.xlarge
+Core: 4m5.xlarge
+Task: --
+Cluster scaling: Not enabled
+
+
+Security and access
+Key name: aws-ec2-keys
+EC2 instance profile: EMR_EC2_DefaultRole
+EMR role: EMR_DefaultRole
+Visible to all users: All Change
+Security groups for Master: sg-000d2146a7dce4da9 (ElasticMapReduce-master)
+Security groups for Core & Task: sg-0d32762df1cf4ab43 (ElasticMapReduce-slave)
